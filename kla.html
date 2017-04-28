@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"> 
+<style type="text/css">
+#top {display: flex;flex-direction: row;flex-grow:1;width: 100%}
+#main {display: flex;flex-direction: row}
+#jobs {width: 17vw;min-width: 600px; max-height: 94vh;overflow:auto}
+#log {display: flex;flex-direction: column;width: 99%; max-height: 94vh;overflow:auto; font-family: monospace;}
+ul {list-style:none;padding-left:10px;}
+.zero_duration {}
+.no_log {}
+.collapsed {display: none}
+.children_collapsed {}
+</style>
+</head>
+<body>
+<div id="top">
+  <button type="button" onclick="process_log();">Process log</button>
+  <button type="button" onclick="show_hide_ta();">Show/Hide input area</button>
+  <input id="chShowZeroes" type="checkbox" value="1" checked onchange="set_jobs_visibility();"/><label>Show entries with 0 duration</label>
+  <input id="chNoLogs" type="checkbox" value="1" checked onchange="set_jobs_visibility();"/><label>Show entries without log</label>
+  <input id="chShowZeroesInLog" type="checkbox" value="1" checked onchange="show_log(current_log);"/><label>Show entries with 0 duration in log</label>
+</div>
+<textarea id="input_area" rows="48" cols="160">
+</textarea> 
+<div id="main">
+  <div id="jobs"></div>
+  <div id="log"></div>
+</div>
+<script type="text/javascript">
+
+var job_name = '';
+var entries = {};
+var regDate = /(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/;
+var current_log = '';
+var entries_wo_parent = 0;
+
+String.prototype.toHHMMSS = function () {
+  var sec_num = parseInt(this, 10);
+  var h   = Math.floor(sec_num / 3600);
+  var m = Math.floor((sec_num - (h * 3600)) / 60);
+  var s = sec_num - (h * 3600) - (m * 60);
+
+  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+String.prototype.fromKettleDate = function () {
+var da = regDate.exec(this); 
+var d = new Date((da[1]),(da[2])-1,(da[3]),(da[4]),(da[5]),(da[6]));
+return d;
+}
+
+function show_hide_ta(){
+  var TA = document.getElementById('input_area');
+  if(TA.style.display == "block")
+    TA.style.display = "none";
+  else
+    TA.style.display = "block";
+}
+function process_log(){
+  entries = {};
+  entries_wo_parent = 0;
+  document.getElementById('input_area').style.display = "none";
+  var lines = document.getElementById('input_area').value.split('\n');
+  for(var i = 0;i < lines.length;i++){
+    var l = lines[i].split(' - ', 4);
+    if (l.length >= 3){
+      var event_date = l[0].fromKettleDate();
+      if (l.length == 3){
+        e_name = l[1];
+        e_message = l[2];
+      }
+      else
+        if (entries[l[1] + ' - ' + l[2]]){
+          e_name = l[1] + ' - ' + l[2];
+          e_message = l[3];
+        }
+        else {
+          e_name = l[1];
+          e_message = l[2] + ' - ' + l[3];
+        }
+
+      if (e_message == 'Start of job execution')
+        job_name = e_name;
+
+      if (entries[e_name]) {
+        entries[e_name]['log'].push([i, lines[i]]);
+        entries[e_name]['finish_time'] = event_date;
+        entries[e_name]['duration'] = String((entries[e_name]['finish_time'] - entries[e_name]['start_time']) / 1000).toHHMMSS();
+
+        var parent_entry = entries[e_name]['parent'];
+        var deepness = 30;
+        while (parent_entry != '' && deepness > 0) {
+          entries[parent_entry]['finish_time'] = event_date;
+          entries[parent_entry]['duration'] = String((entries[parent_entry]['finish_time'] - entries[parent_entry]['start_time']) / 1000).toHHMMSS();
+          parent_entry = entries[parent_entry]['parent'];
+          deepness--;
+        }
+        if (deepness = 0)
+          alert('Too deep parent-child relationship');
+      }
+      else {
+        entries[e_name] = {'parent': '', 'start_time': event_date, 'finish_time':event_date, 'duration': '0'.toHHMMSS(), 'log':[[i, lines[i]]], 'start_row':i, 'num_children':0, 'full_parents':['']};
+        entries_wo_parent++;
+      }
+
+      var started = e_message.split('Starting entry [');
+      if (started.length > 1)
+        if (! entries[started[1].split(']')[0]]) {
+          entries[started[1].split(']')[0]] = {'parent': e_name, 'start_time': event_date, 'finish_time':event_date, 'duration': '0'.toHHMMSS()
+                  , 'log':[], 'start_row':i, 'num_children':0, 'full_parents':entries[e_name]['full_parents'].concat([e_name])};
+          entries[e_name]['num_children'] ++;
+        }
+
+    }
+  }
+
+  drawJobs();
+  show_log(job_name);
+}
+
+function format_entry(ent){
+  res = '<a id="a_'+ ent + '" style="color: '
+  if (entries[ent]['log'].toString().toLowerCase().match('error'))
+    res += 'red';
+  else
+    res += 'blue';  
+
+  res += '" " href="#" onclick="show_log(\''+ ent +'\', event.shiftKey);return false;" '
+  if (entries[ent]['num_children'] == 0)
+    res += '>' + ent + ' (' + entries[ent]['duration'] + ')'
+  else
+    res += 'ondblclick="expand_collapse(\'ul_'+ ent +'\', event.shiftKey);return false;"><b>(' + entries[ent]['num_children'] + ') '+ ent + ' (' + entries[ent]['duration'] + ')</b>'
+  return res + '</a>';
+}
+
+function drawJobs() {
+  var jobs_div = document.getElementById('jobs');
+  jobs_div.innerHTML = '';
+  tmp_j = document.createElement('ul');
+  tmp_j.setAttribute('id','ul_' + job_name);
+  tmp_j.innerHTML = format_entry(job_name);
+  jobs_div.appendChild(tmp_j);
+
+  other_j = document.createElement('ul');
+  other_j.setAttribute('id','ul_');
+  other_j.innerHTML = '<a id="a_" style="color: blue " " href="#" ondblclick="expand_collapse(\'ul_\', event.shiftKey);return false;"><b>(' + entries_wo_parent + ') Other</b></a>';
+  jobs_div.appendChild(other_j);
+  
+  for (entry in entries) {
+    if (entry != job_name){
+      tmp_j = document.createElement('ul');
+      tmp_j.setAttribute('id','ul_' + entry);
+      tmp_j.innerHTML = format_entry(entry);
+      if (entries[entry]['duration'] == '00:00:00')
+        tmp_j.className += ' zero_duration'
+      if (entries[entry]['log'].length == 0)
+        tmp_j.className += ' no_log'
+
+      p_job = document.getElementById('ul_' + entries[entry]['parent'])
+      p_job.appendChild(tmp_j);
+    }
+  }
+  set_jobs_visibility();
+};
+
+function show_log(ent){
+  current_log = ent;
+  var log_div = document.getElementById('log');
+  if (entries[ent]['duration'] != '00:00:00' || document.getElementById('chShowZeroesInLog').checked) {
+    logs = entries[ent]['log'];
+    if (entries[ent]['num_children'] > 0) {
+      ch_logs = return_children_log(ent);
+      logs = logs.concat(ch_logs);
+    }
+    logs.sort(log_sort);
+    var res = '';
+    for (i in logs)
+      res += logs[i][1] + '<br>';
+    log_div.innerHTML = res;
+  }
+  else
+    log_div.innerHTML = '';
+}
+
+function log_sort(a,b){
+  return a[0] - b[0];
+}
+
+
+function return_children_log(ent){
+  res = []
+  for (ent1 in entries)
+    if (entries[ent1]['full_parents'].indexOf(ent) >= 0 && (entries[ent1]['duration'] != '00:00:00' || document.getElementById('chShowZeroesInLog').checked)) {
+      res = res.concat(entries[ent1]['log']);
+    }
+  return res
+}
+
+function expand_collapse(ul_clicked){
+  var ul = document.getElementById(ul_clicked)
+  var show_children = ul.className.match(/(?:^|\s)children_collapsed(?!\S)/)
+  if (show_children) 
+    ul.className = ul.className.replace(/(?:^|\s)children_collapsed(?!\S)/g,'')
+  else
+    ul.className += ' children_collapsed'
+  
+  for (c in ul.childNodes) {
+  if (ul.childNodes[c].tagName)
+    if (ul.childNodes[c].tagName.toLowerCase() == 'ul')
+      if (show_children) 
+        ul.childNodes[c].className = ul.childNodes[c].className.replace(/(?:^|\s)collapsed(?!\S)/g,'')
+      else
+        ul.childNodes[c].className += ' collapsed'
+  }
+}
+
+function set_jobs_visibility(){
+  var rules = document.styleSheets[0].cssRules
+  for (rule in rules){
+    switch (rules[rule].selectorText) {
+      case '.zero_duration': 
+        rules[rule].style.display = (document.getElementById('chShowZeroes').checked ? '': 'none'); break;
+      case '.no_log': 
+        rules[rule].style.display = (document.getElementById('chNoLogs').checked ? '' : 'none'); break;
+    } 
+    
+  }
+}
+show_hide_ta();
+</script>
+</body>
+</html>
